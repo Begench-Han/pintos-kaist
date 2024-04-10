@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -27,6 +28,20 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+
+
+//// MODIFIED - Alarm-Clock ////
+void wakeup_thread (int64_t);
+void thread_put_to_sleep (int64_t);
+bool wakeup_time_less(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+
+//// MODIFIED - Priority-Change ////
+bool thread_priority_more(const struct list_elem *a, const struct list_elem *b, void *aux);
+bool is_thread_idle(void);
+// bool list_compare_priority_sema (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+// bool list_compare_priority (const struct list_elem *a, const struct list_elem *b, void *aux);
+
+
 
 /* A kernel thread or user process.
  *
@@ -85,6 +100,15 @@ typedef int tid_t;
  * only because they are mutually exclusive: only a thread in the
  * ready state is on the run queue, whereas only a thread in the
  * blocked state is on a semaphore wait list. */
+
+struct priority_layer {
+    struct lock *lock;
+    int priority;
+	struct list_elem elem;
+};
+//// MODIFIED - Advanced Scheduler ////
+             
+
 struct thread {
 	/* Owned by thread.c. */
 	tid_t tid;                          /* Thread identifier. */
@@ -92,12 +116,54 @@ struct thread {
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
 
+	//// MODIFIED ////
+	int64_t wakeup_time;				/* Time to wake up. */
+	struct list_elem sleep_elem;	/* List element for sleeping threads. */
+	
+	//// MODIFIED - Priority - Donation ////
+
+
+	// struct lock *waiting_lock; 
+	struct list priority_layers;
+
+	struct list locks_held;            
+	struct lock *waitlist;
+
+	struct list donation_list;
+	struct list_elem donation_elem;
+	int first_priority;
+
+	//// MODIFIED - Advanced Scheduler ////
+	int nice;
+  	int recent_cpu;
+
+	//// MODIFIED - Argument Passing ////
+	// struct file **fd_table;         // thread_create에서 할당
+	// struct semaphore fork_sema;
+
+    int fd_idx;  
+
+
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
+
+	//// MODIFIED - System call ////
+
+	int next_fd;
+	struct file **fdt_array;
+	bool exited;
+
+	bool is_process;
+	struct semaphore sema_process;
+	struct thread *parent;
+	struct list children_list;
+	struct list_elem child_elem;
+	int exit_status;
+
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
@@ -108,6 +174,11 @@ struct thread {
 	struct intr_frame tf;               /* Information for switching */
 	unsigned magic;                     /* Detects stack overflow. */
 };
+
+//// MODIFIED - Argument Passing ////
+#define FDT_PAGES 3                       
+
+#define FDCOUNT_LIMIT FDT_PAGES *(1 << 9) 
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -140,6 +211,17 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+
+//// MODIFIED - Priority - Donation ////
+// bool is_ready_list_empty(void);
+void check_and_yield_cpu(void);
+void recalculate_priority(void);
+bool thread_donation_less(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+
+//// MODIFIED - System call ////
+struct thread *my_get_child (int);
+
 
 void do_iret (struct intr_frame *tf);
 

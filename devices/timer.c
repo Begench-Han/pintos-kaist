@@ -88,14 +88,22 @@ timer_elapsed (int64_t then) {
 }
 
 /* Suspends execution for approximately TICKS timer ticks. */
-void
-timer_sleep (int64_t ticks) {
-	int64_t start = timer_ticks ();
+void 
+timer_sleep(int64_t ticks) {
+    if (ticks <= 0) {
+        return; // Avoid sleeping for non-positive ticks
+    }
 
-	ASSERT (intr_get_level () == INTR_ON);
-	while (timer_elapsed (start) < ticks)
-		thread_yield ();
+    int64_t start = timer_ticks();
+    int64_t wakeup_time = start + ticks;
+    
+    ASSERT(intr_get_level() == INTR_ON);
+
+	//// MODIFIED - Alarm-Clock////
+    thread_put_to_sleep(wakeup_time);
 }
+
+
 
 /* Suspends execution for approximately MS milliseconds. */
 void
@@ -120,12 +128,33 @@ void
 timer_print_stats (void) {
 	printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
-
+
 /* Timer interrupt handler. */
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
 	thread_tick ();
+
+	//// MODIFIED - Advanced Scheduler ////
+
+    if (thread_mlfqs) {
+        if (!is_thread_idle()) {
+            mlfqs_add_one_to_cpu();
+        }
+
+        if (timer_ticks() % TIMER_FREQ == 0) {
+            mlfqs_calculate_load_avg();
+            mlfqs_bulk_update_recent_cpu();
+        }
+
+        if (timer_ticks() % 4 == 0) {
+            mlfqs_bulk_update_priorities();
+        }
+    }
+    
+
+	//// MODIFIED -Alarm-Clock////
+	wakeup_thread (ticks);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

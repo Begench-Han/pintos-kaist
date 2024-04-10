@@ -23,7 +23,7 @@ test_alarm_multiple (void)
 {
   test_sleep (5, 7);
 }
-
+
 /* Information about the test. */
 struct sleep_test 
   {
@@ -90,10 +90,14 @@ test_sleep (int thread_cnt, int iterations)
       t->iterations = 0;
 
       snprintf (name, sizeof name, "thread %d", i);
-      thread_create (name, PRI_DEFAULT, sleeper, t);
+      tid_t tid_num =thread_create (name, PRI_DEFAULT, sleeper, t);
+      // printf("test_sleep: tid_num: %d \n", tid_num);
+
     }
   
   /* Wait long enough for all the threads to finish. */
+  // printf("test_sleep: timer_sleep: %d \n", 100 + iterations * 10 + 100);
+  // printf("thread_cnt: %d, iterations: %d, and paramter: %d \n", thread_cnt, iterations, 100 + thread_cnt * iterations * 10 + 100);
   timer_sleep (100 + thread_cnt * iterations * 10 + 100);
 
   /* Acquire the output lock in case some rogue thread is still
@@ -140,7 +144,7 @@ sleeper (void *t_)
   struct sleep_thread *t = t_;
   struct sleep_test *test = t->test;
   int i;
-
+  // printf("INSIDE sleeper function\n");
   for (i = 1; i <= test->iterations; i++) 
     {
       int64_t sleep_until = test->start + i * t->duration;

@@ -1,4 +1,4 @@
-# -*- makefile -*-
+ # -*- makefile -*-
 
 # Test names.
 tests/threads_TESTS = $(addprefix tests/threads/,alarm-single		\

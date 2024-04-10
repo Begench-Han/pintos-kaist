@@ -31,6 +31,7 @@ static void __do_fork (void *);
 static void
 process_init (void) {
 	struct thread *current = thread_current ();
+	current->is_process = true;
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -173,16 +174,30 @@ process_exec (void *f_name) {
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
+
+	//// Modified - System call
+	char *save_ptr, *token;
+	char *fn_copy;
+	fn_copy = palloc_get_page (0);
+	if (fn_copy == NULL)
+		return TID_ERROR;
+
+	strlcpy (fn_copy, file_name, PGSIZE);
+
 	/* We first kill the current context */
 	process_cleanup ();
-
+	    
+	//// Modified - Argument Passing
 	/* And then load the binary */
-	success = load (file_name, &_if);
-
+	success = load (fn_copy, &_if);
 	/* If load failed, quit. */
-	palloc_free_page (file_name);
-	if (!success)
+
+	//// Modified - System call - just fn_copy
+	palloc_free_page (fn_copy);
+	if (!success) {
+		exit (-1);
 		return -1;
+	}
 
 	/* Start switched process. */
 	do_iret (&_if);
@@ -204,19 +219,47 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	return -1;
+	struct thread *child;
+	int child_exit_status;
+	struct thread *curr = thread_current();
+	child = my_get_child(child_tid);
+	if (child == NULL)
+		return -1;
+	if (child->status == THREAD_DYING){
+		list_remove (&child->child_elem);
+		return  -1;
+	}
+	if (child->parent->tid != curr->tid)
+		return-1;
+	if (child->exited)
+		return-1;
+	sema_down(&child->sema_process);
+	child_exit_status =  child->exit_status;
+	list_remove (&child->child_elem);
+
+	// return 0;
+	return child_exit_status;
+
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void
 process_exit (void) {
 	struct thread *curr = thread_current ();
+	char* ptr;
+	char *file_name = strtok_r(curr->name, " ", &ptr);
+	// printf("%s: exit(%d)\n", file_name, curr->exit_status);
+	if (thread_current ()->is_process)
+		printf("%s: exit(%d)\n", file_name, curr->exit_status);
+	sema_up(&curr->sema_process);
+	curr->exited = true;
+	process_cleanup ();
 	/* TODO: Your code goes here.
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
-	process_cleanup ();
+	// process_cleanup ();
 }
 
 /* Free the current process's resources. */
@@ -329,14 +372,28 @@ load (const char *file_name, struct intr_frame *if_) {
 	bool success = false;
 	int i;
 
+	//// Modified - Argument Passing
+	char *save_ptr, *token;
+	char *argv[64];
+	uintptr_t *addrs[64];
+	char *fn_copy;
+
 	/* Allocate and activate page directory. */
 	t->pml4 = pml4_create ();
 	if (t->pml4 == NULL)
 		goto done;
 	process_activate (thread_current ());
 
+	uintptr_t init_rsp = if_->rsp;
+	fn_copy = palloc_get_page (0);
+	if (fn_copy == NULL)
+		return TID_ERROR;
+	
+	strlcpy (fn_copy, file_name, PGSIZE);
+	token = strtok_r (fn_copy, " ", &save_ptr);
+
 	/* Open executable file. */
-	file = filesys_open (file_name);
+	file = filesys_open (token);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
@@ -413,12 +470,56 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	/* Start address. */
 	if_->rip = ehdr.e_entry;
+	//// Modified - System call
+	int cnt = 0;
+	
+	for (; token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
+		argv[cnt] = token;
+		//printf("Tosha: %s\n", token);
+		cnt++;
+	} 
+
+	// printf ("Number of Args: %d\n", cnt);
+	uintptr_t s = if_->rsp;
+	int tot_len = 0;
+
+	for (i = cnt-1; i >= 0; i--) {
+		tot_len += strlen(argv[i]) + 1;
+		if_->rsp -= (strlen(argv[i]) + 1);  //* sizeof (uint8_t)
+		addrs[i] = if_->rsp;
+		
+		memcpy(if_->rsp, argv[i], strlen(argv[i])+1);
+	}
+
+	//printf("total length: %d\n", tot_len);
+
+	// Place Padding!!!
+	if (tot_len % 8 != 0) {
+		if_->rsp -= (8 - tot_len % 8);
+		*(uint8_t *) if_->rsp = (uint8_t) 0;
+	}
+
+	// Last address
+	if_->rsp -= 8;
+	*(char **) if_->rsp = (char *) 0;
+
+	for (i=cnt-1; i>=0; i--) {
+		if_->rsp -= 8;
+		*(char **)if_->rsp = addrs[i];
+		// printf("1. %p\n", addrs[i]);
+	}
+	
+	if_->rsp -= sizeof(void (*) ()); // for return 
+	*(void **) if_->rsp = (void *) 0;
+	
+	// printf("1. %s\n", (uint64_t *)(if_->rsp + 8));
+	if_->R.rdi = cnt;
+	if_->R.rsi = if_->rsp + 8 ; //to argv[0] address
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
 
 	success = true;
-
 done:
 	/* We arrive here whether the load is successful or not. */
 	file_close (file);
@@ -637,3 +738,40 @@ setup_stack (struct intr_frame *if_) {
 	return success;
 }
 #endif /* VM */
+
+
+//// Modified - Argument Passing
+void argument_stack(char **argv, int argc, void **rsp) {
+	// Save argument strings (character by character)
+	for (int i = argc - 1; i >= 0; i--) {
+		int argv_len = strlen(argv[i]);
+		for (int j = argv_len; j >= 0; j--) {
+			char argv_char = argv[i][j];
+			(*rsp)--;
+			**(char **)rsp = argv_char; // 1 byte
+		}
+		argv[i] = *(char **)rsp; 		// 리스트에 rsp 주소 넣기
+	}
+
+	// Word-align padding
+	int pad = (int)*rsp % 8;
+	for (int k = 0; k < pad; k++) {
+		(*rsp)--;
+		**(uint8_t **)rsp = 0;
+	}
+
+	// Pointers to the argument strings
+	(*rsp) -= 8;
+	**(char ***)rsp = 0;
+
+	for (int i = argc - 1; i >= 0; i--) {
+		(*rsp) -= 8;
+		**(char ***)rsp = argv[i];
+	}
+
+	// Return address
+	(*rsp) -= 8;
+	**(void ***)rsp = 0;
+}
+
+//// Modified - Argument Passing

@@ -46,6 +46,7 @@ uint64_t *base_pml4;
 static bool format_filesys;
 #endif
 
+
 /* -q: Power off after kernel tasks complete? */
 bool power_off_when_done;
 
@@ -79,6 +80,12 @@ main (void) {
 
 	/* Initialize ourselves as a thread so we can use locks,
 	   then enable console locking. */
+	// if (debug) {
+	// 	printf ("Pintos booting with %'"PRIu32" kB RAM...\n",
+	// 			ptov (mem_end) / 1024);
+	// }
+
+	
 	thread_init ();
 	console_init ();
 
