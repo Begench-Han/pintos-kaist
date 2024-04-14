@@ -678,6 +678,7 @@ schedule (void) {
 
 		/* Before switching the thread, we first save the information
 		 * of current running. */
+		// printf("schedule before thread_launch\n");
 		thread_launch (next);
 	}
 }

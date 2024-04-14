@@ -70,6 +70,7 @@ sema_down (struct semaphore *sema) {
 
 	old_level = intr_disable ();
 	while (sema->value == 0) {
+        // msg ("Inside sema_down while loop");
 		//// MODIFIED - Priority - Change(Semaphore) ////
 		list_insert_ordered(&sema->waiters, &thread_current()->elem, thread_priority_more, NULL);
 		thread_block ();
@@ -120,8 +121,11 @@ sema_up (struct semaphore *sema) {
 	if (!list_empty (&sema->waiters)) {
 
 		//// MODIFIED - Priority - Change(Semaphore) ////
+        list_sort (&sema->waiters, thread_priority_more, 0);
 		struct thread *t = list_entry(list_pop_front(&sema->waiters), struct thread, elem);
-		thread_unblock (t);
+		// msg ("Thread %s is unblocked", t->name);
+
+        thread_unblock (t);
 		if (t!=NULL && t->priority > thread_current()->priority && !intr_context ()) {
             yield = true;
         }
@@ -220,6 +224,7 @@ lock_acquire (struct lock *lock) {
 	//// MODIFIED - Priority - Donation ////
     struct thread *cur = thread_current();
     if (lock->holder != NULL) {
+        enum intr_level old_level = intr_disable ();
         cur->waitlist = lock;
         list_insert_ordered(&lock->holder->donation_list, &cur->donation_elem, thread_donation_less, NULL);
         for (int depth = 0; depth < 8 && cur->waitlist != NULL; depth++) {
@@ -231,6 +236,7 @@ lock_acquire (struct lock *lock) {
                 break; 
             }
         }
+        intr_set_level (old_level);
     }
 
     
