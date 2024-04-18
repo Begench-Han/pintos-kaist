@@ -50,6 +50,7 @@ process_create_initd (const char *file_name) {
 	if (fn_copy == NULL)
 		return TID_ERROR;
 	strlcpy (fn_copy, file_name, PGSIZE);
+	// msg ("fn_copy: %s", fn_copy);
 
 	/* Create a new thread to execute FILE_NAME. */
 	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
@@ -189,6 +190,8 @@ process_exec (void *f_name) {
 	    
 	//// Modified - Argument Passing
 	/* And then load the binary */
+	// msg ("exec: %s", file_name);
+	// msg ("exec: %s", fn_copy);
 	success = load (fn_copy, &_if);
 	/* If load failed, quit. */
 
@@ -392,6 +395,8 @@ load (const char *file_name, struct intr_frame *if_) {
 	strlcpy (fn_copy, file_name, PGSIZE);
 	token = strtok_r (fn_copy, " ", &save_ptr);
 
+	// msg ("token: %s", token+11);
+
 	/* Open executable file. */
 	file = filesys_open (token);
 	if (file == NULL) {
@@ -478,6 +483,7 @@ load (const char *file_name, struct intr_frame *if_) {
 		//printf("Tosha: %s\n", token);
 		cnt++;
 	} 
+	// msg ("cnt: %d", cnt);
 
 	// printf ("Number of Args: %d\n", cnt);
 	uintptr_t s = if_->rsp;

@@ -17,3 +17,4 @@ int read (int fd, void *buffer, unsigned length);
 int write (int fd, const void *buffer, unsigned length);
 void seek (int fd, unsigned position);
 tid_t fork (const char *thread_name);
+struct file *get_file_from_fd(int fd);
