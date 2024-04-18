@@ -26,7 +26,12 @@ static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
-
+size_t safe_strlcpy(char *dest, const char *src, size_t size);
+char* safe_strdup(const char* s);
+int get_child_exit_status(tid_t child_tid);
+struct thread *get_child_thread(tid_t child_tid);
+bool is_child_thread_valid(struct thread *child, struct thread *current);
+void remove_child_thread(struct thread *child);
 /* General process initializer for initd and other process. */
 static void
 process_init (void) {
@@ -183,7 +188,7 @@ process_exec (void *f_name) {
 	if (fn_copy == NULL)
 		return TID_ERROR;
 
-	strlcpy (fn_copy, file_name, PGSIZE);
+	safe_strlcpy (fn_copy, file_name, PGSIZE);
 
 	/* We first kill the current context */
 	process_cleanup ();
@@ -222,26 +227,9 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	struct thread *child;
-	int child_exit_status;
-	struct thread *curr = thread_current();
-	child = my_get_child(child_tid);
-	if (child == NULL)
-		return -1;
-	if (child->status == THREAD_DYING){
-		list_remove (&child->child_elem);
-		return  -1;
-	}
-	if (child->parent->tid != curr->tid)
-		return-1;
-	if (child->exited)
-		return-1;
-	sema_down(&child->sema_process);
-	child_exit_status =  child->exit_status;
-	list_remove (&child->child_elem);
 
 	// return 0;
-	return child_exit_status;
+	return get_child_exit_status(child_tid);
 
 }
 
@@ -368,7 +356,7 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
  * Returns true if successful, false otherwise. */
 static bool
 load (const char *file_name, struct intr_frame *if_) {
-	struct thread *t = thread_current ();
+	// struct thread *t = thread_current ();
 	struct ELF ehdr;
 	struct file *file = NULL;
 	off_t file_ofs;
@@ -382,23 +370,21 @@ load (const char *file_name, struct intr_frame *if_) {
 	char *fn_copy;
 
 	/* Allocate and activate page directory. */
+
+	//// Modified
+	struct thread *t = thread_current();
+
+
 	t->pml4 = pml4_create ();
 	if (t->pml4 == NULL)
 		goto done;
 	process_activate (thread_current ());
 
 	uintptr_t init_rsp = if_->rsp;
-	fn_copy = palloc_get_page (0);
-	if (fn_copy == NULL)
-		return TID_ERROR;
-	
-	strlcpy (fn_copy, file_name, PGSIZE);
-	token = strtok_r (fn_copy, " ", &save_ptr);
-
-	// msg ("token: %s", token+11);
 
 	/* Open executable file. */
-	file = filesys_open (token);
+	char* first_word = get_first_string_safe(file_name);
+	file = filesys_open (first_word);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
@@ -473,57 +459,15 @@ load (const char *file_name, struct intr_frame *if_) {
 	if (!setup_stack (if_))
 		goto done;
 
-	/* Start address. */
-	if_->rip = ehdr.e_entry;
-	//// Modified - System call
-	int cnt = 0;
-	
-	for (; token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
-		argv[cnt] = token;
-		//printf("Tosha: %s\n", token);
-		cnt++;
-	} 
-	// msg ("cnt: %d", cnt);
+	if (!setup_stack_args(file_name, if_))
+	goto done;
 
-	// printf ("Number of Args: %d\n", cnt);
-	uintptr_t s = if_->rsp;
-	int tot_len = 0;
 
-	for (i = cnt-1; i >= 0; i--) {
-		tot_len += strlen(argv[i]) + 1;
-		if_->rsp -= (strlen(argv[i]) + 1);  //* sizeof (uint8_t)
-		addrs[i] = if_->rsp;
-		
-		memcpy(if_->rsp, argv[i], strlen(argv[i])+1);
-	}
-
-	//printf("total length: %d\n", tot_len);
-
-	// Place Padding!!!
-	if (tot_len % 8 != 0) {
-		if_->rsp -= (8 - tot_len % 8);
-		*(uint8_t *) if_->rsp = (uint8_t) 0;
-	}
-
-	// Last address
-	if_->rsp -= 8;
-	*(char **) if_->rsp = (char *) 0;
-
-	for (i=cnt-1; i>=0; i--) {
-		if_->rsp -= 8;
-		*(char **)if_->rsp = addrs[i];
-		// printf("1. %p\n", addrs[i]);
-	}
-	
-	if_->rsp -= sizeof(void (*) ()); // for return 
-	*(void **) if_->rsp = (void *) 0;
-	
-	// printf("1. %s\n", (uint64_t *)(if_->rsp + 8));
-	if_->R.rdi = cnt;
-	if_->R.rsi = if_->rsp + 8 ; //to argv[0] address
+	// /* Start address. */
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
+    if_->rip = ehdr.e_entry;  // Set the instruction pointer to the entry point of the ELF.
 
 	success = true;
 done:
@@ -747,37 +691,125 @@ setup_stack (struct intr_frame *if_) {
 
 
 //// Modified - Argument Passing
-void argument_stack(char **argv, int argc, void **rsp) {
-	// Save argument strings (character by character)
-	for (int i = argc - 1; i >= 0; i--) {
-		int argv_len = strlen(argv[i]);
-		for (int j = argv_len; j >= 0; j--) {
-			char argv_char = argv[i][j];
-			(*rsp)--;
-			**(char **)rsp = argv_char; // 1 byte
-		}
-		argv[i] = *(char **)rsp; 		// 리스트에 rsp 주소 넣기
-	}
 
-	// Word-align padding
-	int pad = (int)*rsp % 8;
-	for (int k = 0; k < pad; k++) {
-		(*rsp)--;
-		**(uint8_t **)rsp = 0;
-	}
+int get_child_exit_status(tid_t child_tid) {
+    struct thread *current_thread = thread_current();
+    struct thread *child_thread = get_child_thread(child_tid);
 
-	// Pointers to the argument strings
-	(*rsp) -= 8;
-	**(char ***)rsp = 0;
+    if (!child_thread) {
+        return -1;
+    }
 
-	for (int i = argc - 1; i >= 0; i--) {
-		(*rsp) -= 8;
-		**(char ***)rsp = argv[i];
-	}
+    if (!is_child_thread_valid(child_thread, current_thread)) {
+        remove_child_thread(child_thread);
+        return -1;
+    }
 
-	// Return address
-	(*rsp) -= 8;
-	**(void ***)rsp = 0;
+    sema_down(&child_thread->sema_process);
+    int child_exit_status = child_thread->exit_status;
+    remove_child_thread(child_thread);
+
+    return child_exit_status;
 }
+
+struct thread *get_child_thread(tid_t child_tid) {
+    struct list_elem *e;
+    struct thread *t;
+    
+    for (e = list_begin(&thread_current()->children_list); e != list_end(&thread_current()->children_list); e = list_next(e)) {
+        t = list_entry(e, struct thread, child_elem);
+        if (t->tid == child_tid) {
+            return t;
+        }
+    }
+    return NULL;
+}
+
+
+
+bool is_child_thread_valid(struct thread *child, struct thread *current) {
+    return child->status != THREAD_DYING && child->parent->tid == current->tid && !child->exited;
+}
+
+void remove_child_thread(struct thread *child) {
+    list_remove(&child->child_elem);
+}
+
+size_t safe_strlcpy(char *dest, const char *src, size_t size) {
+    size_t i;
+    for (i = 0; i < size - 1 && src[i] != '\0'; i++) {
+        dest[i] = src[i];
+    }
+    if (size > 0) {
+        dest[i] = '\0';
+    }
+    while (src[i] != '\0') {
+        i++;
+    }
+    return i; 
+}
+char* safe_strdup(const char* s) {
+    if (!s) return NULL;
+    int len = strlen(s) + 1;
+    char* new_str = malloc(len);
+    if (new_str) {
+        memcpy(new_str, s, len);
+    }
+    return new_str;
+}
+
+char* get_first_string_safe(const char* command) {
+    if (!command) return NULL;
+
+    char buffer[1024];  // Local buffer for manipulation
+    safe_strlcpy(buffer, command, sizeof(buffer));
+    buffer[sizeof(buffer) - 1] = '\0';  // Ensure null termination
+
+    char* save_ptr;
+    char* first_word = strtok_r(buffer, " ", &save_ptr);
+    if (!first_word) return NULL;
+
+    return safe_strdup(first_word);
+}
+
+bool setup_stack_args(const char *file_name, struct intr_frame *if_) {
+    char *token, *save_ptr;
+    char *argv[128];  // Increase if necessary, but ensure not to overflow
+    int argc = 0;
+    char *fn_copy = palloc_get_page(0);
+    if (fn_copy == NULL) return false;
+
+    strlcpy(fn_copy, file_name, PGSIZE);
+    for (token = strtok_r(fn_copy, " ", &save_ptr); token != NULL; token = strtok_r(NULL, " ", &save_ptr)) {
+        argv[argc++] = token;
+        if (argc >= 128) break;
+    }
+    int i;
+    uintptr_t *arg_ptrs = malloc(argc * sizeof(uintptr_t));
+    if (arg_ptrs == NULL) {
+        palloc_free_page(fn_copy);
+        return false;
+    }
+    for (i = argc - 1; i >= 0; i--) {
+        int arg_len = strlen(argv[i]) + 1;
+        if_->rsp -= arg_len;
+        memcpy((void *)if_->rsp, argv[i], arg_len);
+        arg_ptrs[i] = if_->rsp;
+    }
+    if_->rsp = (void *)((uintptr_t)(if_->rsp) & ~0xF);
+    if_->rsp -= (argc + 1) * sizeof(uintptr_t);
+    for (i = 0; i < argc; i++) {
+        ((uintptr_t *)if_->rsp)[i] = arg_ptrs[i];
+    }
+    ((uintptr_t *)if_->rsp)[argc] = 0;  
+    if_->R.rdi = argc;
+    if_->R.rsi = (uintptr_t)if_->rsp;
+
+    free(arg_ptrs);
+    palloc_free_page(fn_copy);
+    return true;
+}
+
+
 
 //// Modified - Argument Passing

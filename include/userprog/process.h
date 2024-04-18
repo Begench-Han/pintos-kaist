@@ -9,5 +9,10 @@ int process_exec (void *f_name);
 int process_wait (tid_t);
 void process_exit (void);
 void process_activate (struct thread *next);
+bool setup_stack_args(const char *file_name, struct intr_frame *if_);
+// char* get_first_string_safe(const char* command)
+char* get_first_string_safe(const char* command);
+
+
 
 #endif /* userprog/process.h */
