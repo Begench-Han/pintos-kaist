@@ -159,8 +159,11 @@ struct thread {
 	
 	struct list fdt_list;
 	bool exited;
+	tid_t parent_tid;
+	struct semaphore wait_sema;
 
 	bool is_process;
+	tid_t child_tid;
 	struct file* file_exec;
 	struct list children_list;
 	struct semaphore sema_process;

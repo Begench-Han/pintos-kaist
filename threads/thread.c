@@ -231,11 +231,12 @@ thread_create (const char *name, int priority,
 	#ifdef USERPROG
 	struct thread *curr = thread_current ();
 	sema_init (&t->sema_process, 0);
+	sema_init (&t->sema_fork, 0);
 	list_push_back (&curr->children_list, &t->child_elem);
   	t->parent = curr;
 	t->exit_status = 0;
 	t->exited = false;
-	sema_init (&t->sema_fork, 0);
+	
 	// t->fdt_array = palloc_get_page(0);
 	// list_init(&t->fdt_list);
 
@@ -886,8 +887,9 @@ struct thread * my_get_child (int tid) {
 		e = list_next (e)) {
 
 		struct thread *child = list_entry (e, struct thread, child_elem);
-		if (tid == child->tid)
+		if (tid == child->tid){
 			return child;
+		}
 	}
 	return NULL;
 }

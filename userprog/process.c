@@ -34,6 +34,8 @@ int get_child_exit_status(tid_t child_tid);
 struct thread *get_child_thread(tid_t child_tid);
 bool is_child_thread_valid(struct thread *child, struct thread *current);
 void remove_child_thread(struct thread *child);
+static void close_all_files(struct list *files);
+static void detach_children(struct list *children);
 /* General process initializer for initd and other process. */
 static void
 process_init (void) {
@@ -84,57 +86,85 @@ initd (void *f_name) {
  * TID_ERROR if the thread cannot be created. */
 tid_t
 process_fork (const char *name, struct intr_frame *if_ UNUSED) {
-	/* Clone current thread to new thread.*/
 	struct thread *curr = thread_current();
-	//memcpy(&curr->fork_if, if_, sizeof(struct intr_frame));
-
-	curr -> fork_if.R.rax =  thread_create (name,
-			PRI_DEFAULT, __do_fork, thread_current ());
-
-
-
-	sema_down(&curr->sema_fork);
-
-	return curr -> fork_if.R.rax;
+    curr->child_tid = thread_create(name, PRI_DEFAULT, __do_fork, curr);
+    if (curr->child_tid == TID_ERROR) {
+        return TID_ERROR;  
+    }
+    sema_down(&curr->sema_fork);
+	return curr->child_tid;
 }
 
 #ifndef VM
 /* Duplicate the parent's address space by passing this function to the
  * pml4_for_each. This is only for the project 2. */
+
+static bool allocate_and_duplicate_page(void *va, uint64_t *pte, struct thread *parent, struct thread *current) {
+    if (is_kern_pte(pte)) {
+        return true; // Skip kernel pages directly
+    }
+
+    void *parent_page = pml4_get_page(parent->pml4, va);
+    if (parent_page == NULL) {
+        return false; // Parent page does not exist, cannot duplicate
+    }
+
+    void *newpage = palloc_get_page(PAL_USER);
+    if (newpage == NULL) {
+        return false; // Failed to allocate page for child
+    }
+
+    // Duplicate the content
+    memcpy(newpage, parent_page, PGSIZE);
+    bool writable = is_writable(pte);
+
+    if (!pml4_set_page(current->pml4, va, newpage, writable)) {
+        palloc_free_page(newpage); // Cleanup on failure to set page
+        return false;
+    }
+
+    return true;
+}
+
 static bool
 duplicate_pte (uint64_t *pte, void *va, void *aux) {
-	struct thread *current = thread_current ();
+	// struct thread *current = thread_current ();
+	// struct thread *parent = (struct thread *) aux;
+	// void *parent_page;
+	// void *newpage;
+	// bool writable;
+
+	// /* 1. TODO: If the parent_page is kernel page, then return immediately. */
+	// if (is_kern_pte(pte))
+	// 	return true;
+	// /* 2. Resolve VA from the parent's page map level 4. */
+	// parent_page = pml4_get_page (parent->pml4, va);
+
+	// /* 3. TODO: Allocate new PAL_USER page for the child and set result to
+	//  *    TODO: NEWPAGE. */
+	// newpage = palloc_get_page(PAL_USER);
+	// if (newpage == NULL) {
+	// 	return false;
+	// }
+
+	// /* 4. TODO: Duplicate parent's page to the new page and
+	//  *    TODO: check whether parent's page is writable or not (set WRITABLE
+	//  *    TODO: according to the result). */
+	// memcpy(newpage, parent_page, PGSIZE);
+	// writable = is_writable(pte);
+	// /* 5. Add new page to child's page table at address VA with WRITABLE
+	//  *    permission. */
+	// if (!pml4_set_page (current->pml4, va, newpage, writable)) {
+	// 	/* 6. TODO: if fail to insert page, do error handling. */
+	// 			palloc_free_page(newpage);
+	// 	return false;
+	// }
+	// return true;
+
 	struct thread *parent = (struct thread *) aux;
-	void *parent_page;
-	void *newpage;
-	bool writable;
+    struct thread *current = thread_current();
 
-	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
-	if (is_kern_pte(pte))
-		return true;
-	/* 2. Resolve VA from the parent's page map level 4. */
-	parent_page = pml4_get_page (parent->pml4, va);
-
-	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
-	 *    TODO: NEWPAGE. */
-	newpage = palloc_get_page(PAL_USER);
-	if (newpage == NULL) {
-		return false;
-	}
-
-	/* 4. TODO: Duplicate parent's page to the new page and
-	 *    TODO: check whether parent's page is writable or not (set WRITABLE
-	 *    TODO: according to the result). */
-	memcpy(newpage, parent_page, PGSIZE);
-	writable = is_writable(pte);
-	/* 5. Add new page to child's page table at address VA with WRITABLE
-	 *    permission. */
-	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
-		/* 6. TODO: if fail to insert page, do error handling. */
-				palloc_free_page(newpage);
-		return false;
-	}
-	return true;
+    return allocate_and_duplicate_page(va, pte, parent, current);
 }
 #endif
 
@@ -142,6 +172,38 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
  * Hint) parent->tf does not hold the userland context of the process.
  *       That is, you are required to pass second argument of process_fork to
  *       this function. */
+static bool duplicate_fd(struct fd_table *parent_f, struct thread *child) {
+    struct file *dup_file = file_duplicate(parent_f->file);
+    if (!dup_file) {
+        return false;  // File duplication failed
+    }
+
+    struct fd_table *child_fdt = malloc(sizeof(struct fd_table));
+    if (!child_fdt) {
+        file_close(dup_file);  // Cleanup if malloc fails
+        return false;
+    }
+
+    child_fdt->file = dup_file;
+    child_fdt->fd = parent_f->fd;
+    list_push_back(&child->fdt_list, &child_fdt->f_elem);
+    return true;
+}
+
+/* Function to duplicate all file descriptors from parent to child */
+static bool duplicate_all_fds(struct thread *parent, struct thread *child) {
+    struct list_elem *e = list_begin(&parent->fdt_list);
+    while (e != list_end(&parent->fdt_list)) {
+        struct fd_table *parent_f = list_entry(e, struct fd_table, f_elem);
+        if (!duplicate_fd(parent_f, child)) {
+            return false;  // Stop and return false if any fd duplication fails
+        }
+        e = list_next(e);
+    }
+    child->last_fd = parent->last_fd;
+    return true;
+}
+
 static void
 __do_fork (void *aux) {
 	struct intr_frame if_;
@@ -178,36 +240,20 @@ __do_fork (void *aux) {
 	// struct list fdt_list =  parent->fdt_list;
 	enum intr_level old_level = intr_disable();
 
-	struct list_elem *e = list_begin(&parent->fdt_list);
-	struct thread *curr = thread_current();
-	int fdt_size;
-	process_init ();
-	for (; e!=list_end(&parent->fdt_list); e=list_next(e)) {
-			// Duplicate parent
-		struct fd_table *parent_f = list_entry(e, struct fd_table, f_elem);
-		lock_acquire (&filesys_lock);
-		struct file *dup_parent_f = file_duplicate(parent_f->file);
-		lock_release (&filesys_lock);
-			// Check if valid
-		if (dup_parent_f != NULL){
-			struct fd_table *child_fdt = malloc(sizeof(struct fd_table));
-			if (child_fdt == NULL) {
-				goto error;
-			}
-			child_fdt->file = dup_parent_f;
-			child_fdt->fd = parent_f -> fd;
-			// Update child's fdt_list
-			list_push_back(&curr->fdt_list, &child_fdt->f_elem);
-		}
-	}
-	curr -> last_fd = parent -> last_fd;
+    if (!duplicate_all_fds(parent, current)) {
+        intr_set_level(old_level);
+        goto error;
+    }
 
-	intr_set_level(old_level);
-	/* Finally, switch to the newly created process. */
-	if (succ)
-		if_.R.rax = 0;
-		sema_up(&parent->sema_fork);
-		do_iret(&if_);
+    intr_set_level(old_level);
+
+    if (succ) {
+        if_.R.rax = 0;  // Child returns 0
+        sema_up(&parent->sema_fork);
+        do_iret(&if_);
+    }
+
+		
 error:
 	parent_if -> R.rax = TID_ERROR;
 	sema_up(&parent->sema_fork);
@@ -265,26 +311,91 @@ process_wait (tid_t child_tid) {
 	// while(true){
 	// 	thread_yield();
 	// }
-	struct thread *child;
-	int child_exit_status;
-	struct thread *curr = thread_current();
-	child = my_get_child(child_tid);
-	if (child == NULL)
-		return -1;
-	if (child->parent->tid != curr->tid)
-		return -1;
-	// if (child->status == THREAD_DYING){
-	// 	child -> parent = NULL;
-	// 	list_remove (&child->child_elem);
-	// 	return -1;
-	// }
-	sema_down(&child->sema_process);
-	child_exit_status =  child->exit_status;
-	list_remove (&child->child_elem);
-	child -> parent = NULL;
-	return child_exit_status;
+    struct thread *current = thread_current();
+    struct thread *child = my_get_child(child_tid);
+
+    if (!child || child->parent->tid != current->tid) {
+        return -1;  
+    }
+    sema_down(&child->sema_process);
+    int child_exit_status = child->exit_status;
+    list_remove(&child->child_elem);
+    child->parent = NULL;
+
+    return child_exit_status;
 }
 
+// void cleanup_children(struct thread *curr) {
+//     struct list_elem *e = list_begin(&curr->children_list);
+//     while (e != list_end(&curr->children_list)) {
+//         struct thread *child = list_entry(e, struct thread, child_elem);
+//         child->parent = NULL;
+//         e = list_remove(e);
+//     }
+// }
+
+// void cleanup_file_descriptors(struct thread *curr) {
+//     struct list_elem *e = list_begin(&curr->fdt_list);
+//     while (e != list_end(&curr->fdt_list)) {
+//         struct fd_table *fdt = list_entry(e, struct fd_table, f_elem);
+//         e = list_remove(e);
+//         if (fdt->file) {
+//             file_close(fdt->file);
+//         }
+//         free(fdt);
+//     }
+// }
+
+// void close_executable_file(struct thread *curr) {
+//     if (curr->file_exec) {
+//         file_close(curr->file_exec);
+//         curr->file_exec = NULL;
+//     }
+// }
+
+void print_process_exit_message(struct thread *curr) {
+    char* ptr;
+    char *file_name = strtok_r(curr->name, " ", &ptr);
+    if (curr->is_process) {
+        printf("%s: exit(%d)\n", file_name, curr->exit_status);
+    }
+}
+
+void detach_all_children(struct thread *curr) {
+    struct list_elem *e;
+    for (e = list_begin(&curr->children_list); 
+         e != list_end(&curr->children_list); 
+         e = list_remove(e)) {
+        struct thread *child = list_entry(e, struct thread, child_elem);
+        child->parent = NULL;
+    }
+}
+
+void signal_sema_process(struct thread *curr) {
+    sema_up(&curr->sema_process);
+}
+
+void close_and_free_all_files(struct thread *curr) {
+    struct list_elem *e = list_begin(&curr->fdt_list);
+    for (; e != list_end(&curr->fdt_list);) {
+        struct fd_table *fdt = list_entry(e, struct fd_table, f_elem);
+        e = list_remove(e);
+        if (fdt->file != NULL) {
+            lock_acquire(&filesys_lock);
+            file_close(fdt->file);
+            lock_release(&filesys_lock);
+        }
+        free(fdt);
+    }
+}
+
+void close_executable_file(struct thread *curr) {
+    if (curr->file_exec != NULL) {
+        lock_acquire(&filesys_lock);
+        file_close(curr->file_exec);
+        lock_release(&filesys_lock);
+    }
+}
 /* Exit the process. This function is called by thread_exit (). */
 void
 process_exit (void) {
@@ -295,57 +406,15 @@ process_exit (void) {
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
-	char* ptr;
-	char *file_name = strtok_r(curr->name, " ", &ptr);
-	if (thread_current ()->is_process)
-		printf("%s: exit(%d)\n", file_name, curr->exit_status);
-
-	struct list_elem *e;
-	for (e = list_begin(&thread_current () -> children_list);
-		e != list_end (&thread_current () -> children_list); e = list_remove(e) ) {
-		struct thread* child = list_entry(e, struct thread, child_elem);
-		child -> parent = NULL;
-	}
-	
-	sema_up(&curr->sema_process);
-	// curr->exited = true;
-
-	// for (e = list_begin (&thread_current () -> fdt_list);
-	// 	e != list_end (&thread_current () -> fdt_list);) {
-	// 	struct fd_table *fdt = list_entry (e, struct fd_table, f_elem);
-	// // palloc_free_page (&thread_current ()->fdt_list);
-	struct list *fdt_l =  &thread_current () -> fdt_list;
-	e = list_begin (fdt_l);
-	
-	// printf("List size: %d \n", list_size(fdt_l));
-	for (; 
-		e!= list_end (fdt_l); 
-		 ) {
-
-		struct fd_table *fdt = list_entry (e, struct fd_table, f_elem);
-		
-		e = list_remove(e);
-
-		if (fdt->file != NULL) {
-			lock_acquire (&filesys_lock);
-			file_close (fdt->file);
-			lock_release (&filesys_lock);
-		}
-	// 	e = list_remove(e);
-	// 	free (fdt);
-	// }
-		free (fdt);
-	}
-	// process_cleanup ();
-
-	if (curr -> file_exec != NULL) {
-		lock_acquire (&filesys_lock);
-		file_close (curr -> file_exec);
-		lock_release (&filesys_lock);
-	}
-	// printf("Closed (maybe a long ago) %d\n", curr -> tid);
-	intr_set_level(old_level);
-	process_cleanup ();
+    print_process_exit_message(curr);
+    detach_all_children(curr);
+    signal_sema_process(curr);
+    close_and_free_all_files(curr);
+    close_executable_file(curr);
+    intr_set_level(old_level);
+    process_cleanup();
+    intr_set_level(old_level);
+    process_cleanup();
 }
 
 /* Free the current process's resources. */
@@ -555,8 +624,9 @@ load (const char *file_name, struct intr_frame *if_) {
 	if (!setup_stack (if_))
 		goto done;
 
-	if (!setup_stack_args(file_name, if_))
+	if (!setup_stack_args(file_name, if_)) 
 	goto done;
+	
 
 
 	// /* Start address. */

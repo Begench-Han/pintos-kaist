@@ -83,8 +83,10 @@ kill (struct intr_frame *f) {
 		case SEL_UCSEG:
 			/* User's code segment, so it's a user exception, as we
 			   expected.  Kill the user process.  */
-			thread_current() -> exit_status = -1;
-			thread_exit ();
+			printf ("%s: dying due to interrupt %#04llx (%s).\n",
+			thread_name (), f->vec_no, intr_name (f->vec_no));
+			// intr_dump_frameZ (f);
+			exit (-1);
 
 		case SEL_KCSEG:
 			/* Kernel's code segment, which indicates a kernel bug.
@@ -99,9 +101,10 @@ kill (struct intr_frame *f) {
 			   kernel. */
 			printf ("Interrupt %#04llx (%s) in unknown segment %04x\n",
 					f->vec_no, intr_name (f->vec_no), f->cs);
-			thread_current() -> exit_status = -1;
+			// thread_current() -> exit_status = -1;
 
-			thread_exit ();
+			// thread_exit ();
+			exit (-1);
 	}
 }
 
