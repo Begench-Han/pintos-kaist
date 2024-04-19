@@ -235,7 +235,9 @@ thread_create (const char *name, int priority,
   	t->parent = curr;
 	t->exit_status = 0;
 	t->exited = false;
-	t->fdt_array = palloc_get_page(0);
+	sema_init (&t->sema_fork, 0);
+	// t->fdt_array = palloc_get_page(0);
+	// list_init(&t->fdt_list);
 
 #endif
 
@@ -508,12 +510,15 @@ init_thread (struct thread *t, const char *name, int priority) {
 
 
 	//// Modified - System call
-	#ifdef USERPROG
-		t->is_process = false; 
+#ifdef USERPROG
+	t->is_process = false; 
 	list_init(&t->children_list);
 	t->parent = NULL;
-		t->exit_status = NULL;
-	t->next_fd = 2;
+	t->exit_status = NULL;
+	list_init(&t->fdt_list);
+	t-> file_exec = NULL;
+	t-> last_fd = 1;
+	// t->next_fd = 2;
 #endif
 }
 
@@ -635,9 +640,15 @@ static void
 do_schedule(int status) {
 	ASSERT (intr_get_level () == INTR_OFF);
 	ASSERT (thread_current()->status == THREAD_RUNNING);
-	while (!list_empty (&destruction_req)) {
+	struct list_elem *e;
+	for (e = list_begin(&destruction_req); e != list_end(&destruction_req);) {
 		struct thread *victim =
-			list_entry (list_pop_front (&destruction_req), struct thread, elem);
+			list_entry (e, struct thread, elem);
+		if (victim -> parent != NULL) {
+			e = list_next(e);
+			continue;
+		}
+		e = list_remove(e);
 		palloc_free_page(victim);
 	}
 	thread_current ()->status = status;
@@ -876,7 +887,7 @@ struct thread * my_get_child (int tid) {
 
 		struct thread *child = list_entry (e, struct thread, child_elem);
 		if (tid == child->tid)
-		return child;
+			return child;
 	}
 	return NULL;
 }

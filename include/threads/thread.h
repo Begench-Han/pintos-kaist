@@ -153,16 +153,22 @@ struct thread {
 
 	//// MODIFIED - System call ////
 
-	int next_fd;
-	struct file **fdt_array;
+	// int next_fd;
+	// struct file **fdt_array;
+	int last_fd;
+	
+	struct list fdt_list;
 	bool exited;
 
 	bool is_process;
+	struct file* file_exec;
+	struct list children_list;
 	struct semaphore sema_process;
 	struct thread *parent;
-	struct list children_list;
 	struct list_elem child_elem;
 	int exit_status;
+	struct intr_frame fork_if;
+	struct semaphore sema_fork;
 
 #endif
 #ifdef VM
@@ -221,6 +227,12 @@ bool thread_donation_less(const struct list_elem *a, const struct list_elem *b, 
 
 //// MODIFIED - System call ////
 struct thread *my_get_child (int);
+struct fd_table
+{ 
+	struct file *file;
+	struct list_elem f_elem;
+	int fd;
+};
 
 
 void do_iret (struct intr_frame *tf);

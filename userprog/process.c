@@ -18,9 +18,11 @@
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+#include "threads/malloc.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
+#include "userprog/syscall.h"
 
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
@@ -83,8 +85,17 @@ initd (void *f_name) {
 tid_t
 process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	/* Clone current thread to new thread.*/
-	return thread_create (name,
+	struct thread *curr = thread_current();
+	//memcpy(&curr->fork_if, if_, sizeof(struct intr_frame));
+
+	curr -> fork_if.R.rax =  thread_create (name,
 			PRI_DEFAULT, __do_fork, thread_current ());
+
+
+
+	sema_down(&curr->sema_fork);
+
+	return curr -> fork_if.R.rax;
 }
 
 #ifndef VM
@@ -99,21 +110,29 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	bool writable;
 
 	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
-
+	if (is_kern_pte(pte))
+		return true;
 	/* 2. Resolve VA from the parent's page map level 4. */
 	parent_page = pml4_get_page (parent->pml4, va);
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
+	newpage = palloc_get_page(PAL_USER);
+	if (newpage == NULL) {
+		return false;
+	}
 
 	/* 4. TODO: Duplicate parent's page to the new page and
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
 	 *    TODO: according to the result). */
-
+	memcpy(newpage, parent_page, PGSIZE);
+	writable = is_writable(pte);
 	/* 5. Add new page to child's page table at address VA with WRITABLE
 	 *    permission. */
 	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
 		/* 6. TODO: if fail to insert page, do error handling. */
+				palloc_free_page(newpage);
+		return false;
 	}
 	return true;
 }
@@ -129,7 +148,7 @@ __do_fork (void *aux) {
 	struct thread *parent = (struct thread *) aux;
 	struct thread *current = thread_current ();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame *parent_if;
+	struct intr_frame *parent_if = &parent->fork_if;
 	bool succ = true;
 
 	/* 1. Read the cpu context to local stack. */
@@ -156,12 +175,43 @@ __do_fork (void *aux) {
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
 
-	process_init ();
+	// struct list fdt_list =  parent->fdt_list;
+	enum intr_level old_level = intr_disable();
 
+	struct list_elem *e = list_begin(&parent->fdt_list);
+	struct thread *curr = thread_current();
+	int fdt_size;
+	process_init ();
+	for (; e!=list_end(&parent->fdt_list); e=list_next(e)) {
+			// Duplicate parent
+		struct fd_table *parent_f = list_entry(e, struct fd_table, f_elem);
+		lock_acquire (&filesys_lock);
+		struct file *dup_parent_f = file_duplicate(parent_f->file);
+		lock_release (&filesys_lock);
+			// Check if valid
+		if (dup_parent_f != NULL){
+			struct fd_table *child_fdt = malloc(sizeof(struct fd_table));
+			if (child_fdt == NULL) {
+				goto error;
+			}
+			child_fdt->file = dup_parent_f;
+			child_fdt->fd = parent_f -> fd;
+			// Update child's fdt_list
+			list_push_back(&curr->fdt_list, &child_fdt->f_elem);
+		}
+	}
+	curr -> last_fd = parent -> last_fd;
+
+	intr_set_level(old_level);
 	/* Finally, switch to the newly created process. */
 	if (succ)
-		do_iret (&if_);
+		if_.R.rax = 0;
+		sema_up(&parent->sema_fork);
+		do_iret(&if_);
 error:
+	parent_if -> R.rax = TID_ERROR;
+	sema_up(&parent->sema_fork);
+	current -> exit_status = -1;
 	thread_exit ();
 }
 
@@ -169,7 +219,6 @@ error:
  * Returns -1 on fail. */
 int
 process_exec (void *f_name) {
-	char *file_name = f_name;
 	bool success;
 
 	/* We cannot use the intr_frame in the thread structure.
@@ -180,30 +229,17 @@ process_exec (void *f_name) {
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
-
-	//// Modified - System call
 	char *save_ptr, *token;
-	char *fn_copy;
-	fn_copy = palloc_get_page (0);
-	if (fn_copy == NULL)
-		return TID_ERROR;
-
-	safe_strlcpy (fn_copy, file_name, PGSIZE);
 
 	/* We first kill the current context */
 	process_cleanup ();
-	    
-	//// Modified - Argument Passing
-	/* And then load the binary */
-	// msg ("exec: %s", file_name);
-	// msg ("exec: %s", fn_copy);
-	success = load (fn_copy, &_if);
-	/* If load failed, quit. */
 
-	//// Modified - System call - just fn_copy
-	palloc_free_page (fn_copy);
+	/* And then load the binary */
+	success = load (f_name, &_if);
+
+	/* If load failed, quit. */
+	palloc_free_page (f_name);
 	if (!success) {
-		exit (-1);
 		return -1;
 	}
 
@@ -211,7 +247,6 @@ process_exec (void *f_name) {
 	do_iret (&_if);
 	NOT_REACHED ();
 }
-
 
 /* Waits for thread TID to die and returns its exit status.  If
  * it was terminated by the kernel (i.e. killed due to an
@@ -223,34 +258,94 @@ process_exec (void *f_name) {
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) {
+process_wait (tid_t child_tid) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-
-	// return 0;
-	return get_child_exit_status(child_tid);
-
+	// while(true){
+	// 	thread_yield();
+	// }
+	struct thread *child;
+	int child_exit_status;
+	struct thread *curr = thread_current();
+	child = my_get_child(child_tid);
+	if (child == NULL)
+		return -1;
+	if (child->parent->tid != curr->tid)
+		return -1;
+	// if (child->status == THREAD_DYING){
+	// 	child -> parent = NULL;
+	// 	list_remove (&child->child_elem);
+	// 	return -1;
+	// }
+	sema_down(&child->sema_process);
+	child_exit_status =  child->exit_status;
+	list_remove (&child->child_elem);
+	child -> parent = NULL;
+	return child_exit_status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void
 process_exit (void) {
+	enum intr_level old_level = intr_disable();
 	struct thread *curr = thread_current ();
-	char* ptr;
-	char *file_name = strtok_r(curr->name, " ", &ptr);
-	// printf("%s: exit(%d)\n", file_name, curr->exit_status);
-	if (thread_current ()->is_process)
-		printf("%s: exit(%d)\n", file_name, curr->exit_status);
-	sema_up(&curr->sema_process);
-	curr->exited = true;
-	process_cleanup ();
 	/* TODO: Your code goes here.
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
+	char* ptr;
+	char *file_name = strtok_r(curr->name, " ", &ptr);
+	if (thread_current ()->is_process)
+		printf("%s: exit(%d)\n", file_name, curr->exit_status);
+
+	struct list_elem *e;
+	for (e = list_begin(&thread_current () -> children_list);
+		e != list_end (&thread_current () -> children_list); e = list_remove(e) ) {
+		struct thread* child = list_entry(e, struct thread, child_elem);
+		child -> parent = NULL;
+	}
+	
+	sema_up(&curr->sema_process);
+	// curr->exited = true;
+
+	// for (e = list_begin (&thread_current () -> fdt_list);
+	// 	e != list_end (&thread_current () -> fdt_list);) {
+	// 	struct fd_table *fdt = list_entry (e, struct fd_table, f_elem);
+	// // palloc_free_page (&thread_current ()->fdt_list);
+	struct list *fdt_l =  &thread_current () -> fdt_list;
+	e = list_begin (fdt_l);
+	
+	// printf("List size: %d \n", list_size(fdt_l));
+	for (; 
+		e!= list_end (fdt_l); 
+		 ) {
+
+		struct fd_table *fdt = list_entry (e, struct fd_table, f_elem);
+		
+		e = list_remove(e);
+
+		if (fdt->file != NULL) {
+			lock_acquire (&filesys_lock);
+			file_close (fdt->file);
+			lock_release (&filesys_lock);
+		}
+	// 	e = list_remove(e);
+	// 	free (fdt);
+	// }
+		free (fdt);
+	}
 	// process_cleanup ();
+
+	if (curr -> file_exec != NULL) {
+		lock_acquire (&filesys_lock);
+		file_close (curr -> file_exec);
+		lock_release (&filesys_lock);
+	}
+	// printf("Closed (maybe a long ago) %d\n", curr -> tid);
+	intr_set_level(old_level);
+	process_cleanup ();
 }
 
 /* Free the current process's resources. */
@@ -384,6 +479,7 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	/* Open executable file. */
 	char* first_word = get_first_string_safe(file_name);
+	lock_acquire(&filesys_lock);
 	file = filesys_open (first_word);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
@@ -472,7 +568,11 @@ load (const char *file_name, struct intr_frame *if_) {
 	success = true;
 done:
 	/* We arrive here whether the load is successful or not. */
-	file_close (file);
+	if (success == false)
+		file_close (file);
+	else
+		thread_current() -> file_exec = file;
+	lock_release (&filesys_lock);
 	return success;
 }
 
@@ -701,13 +801,19 @@ int get_child_exit_status(tid_t child_tid) {
     }
 
     if (!is_child_thread_valid(child_thread, current_thread)) {
-        remove_child_thread(child_thread);
         return -1;
     }
+	if (child_thread->status == THREAD_DYING){
+		child_thread -> parent = NULL;
+		remove_child_thread(child_thread);
+		return -1;
+	}
+
 
     sema_down(&child_thread->sema_process);
     int child_exit_status = child_thread->exit_status;
     remove_child_thread(child_thread);
+	child_thread -> parent = NULL;
 
     return child_exit_status;
 }
@@ -728,7 +834,7 @@ struct thread *get_child_thread(tid_t child_tid) {
 
 
 bool is_child_thread_valid(struct thread *child, struct thread *current) {
-    return child->status != THREAD_DYING && child->parent->tid == current->tid && !child->exited;
+    return child->parent->tid == current->tid;
 }
 
 void remove_child_thread(struct thread *child) {
