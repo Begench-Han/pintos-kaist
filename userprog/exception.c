@@ -85,7 +85,6 @@ kill (struct intr_frame *f) {
 			   expected.  Kill the user process.  */
 			printf ("%s: dying due to interrupt %#04llx (%s).\n",
 			thread_name (), f->vec_no, intr_name (f->vec_no));
-			// intr_dump_frameZ (f);
 			exit (-1);
 
 		case SEL_KCSEG:
@@ -101,9 +100,6 @@ kill (struct intr_frame *f) {
 			   kernel. */
 			printf ("Interrupt %#04llx (%s) in unknown segment %04x\n",
 					f->vec_no, intr_name (f->vec_no), f->cs);
-			// thread_current() -> exit_status = -1;
-
-			// thread_exit ();
 			exit (-1);
 	}
 }

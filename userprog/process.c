@@ -101,25 +101,24 @@ process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 
 static bool allocate_and_duplicate_page(void *va, uint64_t *pte, struct thread *parent, struct thread *current) {
     if (is_kern_pte(pte)) {
-        return true; // Skip kernel pages directly
+        return true;
     }
 
     void *parent_page = pml4_get_page(parent->pml4, va);
     if (parent_page == NULL) {
-        return false; // Parent page does not exist, cannot duplicate
+        return false;
     }
 
     void *newpage = palloc_get_page(PAL_USER);
     if (newpage == NULL) {
-        return false; // Failed to allocate page for child
+        return false; 
     }
 
-    // Duplicate the content
     memcpy(newpage, parent_page, PGSIZE);
     bool writable = is_writable(pte);
 
     if (!pml4_set_page(current->pml4, va, newpage, writable)) {
-        palloc_free_page(newpage); // Cleanup on failure to set page
+        palloc_free_page(newpage); 
         return false;
     }
 
@@ -130,36 +129,22 @@ static bool
 duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	// struct thread *current = thread_current ();
 	// struct thread *parent = (struct thread *) aux;
-	// void *parent_page;
-	// void *newpage;
-	// bool writable;
+
 
 	// /* 1. TODO: If the parent_page is kernel page, then return immediately. */
-	// if (is_kern_pte(pte))
-	// 	return true;
+
 	// /* 2. Resolve VA from the parent's page map level 4. */
-	// parent_page = pml4_get_page (parent->pml4, va);
 
 	// /* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	//  *    TODO: NEWPAGE. */
-	// newpage = palloc_get_page(PAL_USER);
-	// if (newpage == NULL) {
-	// 	return false;
-	// }
 
 	// /* 4. TODO: Duplicate parent's page to the new page and
 	//  *    TODO: check whether parent's page is writable or not (set WRITABLE
 	//  *    TODO: according to the result). */
-	// memcpy(newpage, parent_page, PGSIZE);
-	// writable = is_writable(pte);
 	// /* 5. Add new page to child's page table at address VA with WRITABLE
 	//  *    permission. */
-	// if (!pml4_set_page (current->pml4, va, newpage, writable)) {
 	// 	/* 6. TODO: if fail to insert page, do error handling. */
-	// 			palloc_free_page(newpage);
-	// 	return false;
-	// }
-	// return true;
+
 
 	struct thread *parent = (struct thread *) aux;
     struct thread *current = thread_current();
@@ -175,12 +160,12 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 static bool duplicate_fd(struct fd_table *parent_f, struct thread *child) {
     struct file *dup_file = file_duplicate(parent_f->file);
     if (!dup_file) {
-        return false;  // File duplication failed
+        return false; 
     }
 
     struct fd_table *child_fdt = malloc(sizeof(struct fd_table));
     if (!child_fdt) {
-        file_close(dup_file);  // Cleanup if malloc fails
+        file_close(dup_file);
         return false;
     }
 
@@ -196,7 +181,7 @@ static bool duplicate_all_fds(struct thread *parent, struct thread *child) {
     while (e != list_end(&parent->fdt_list)) {
         struct fd_table *parent_f = list_entry(e, struct fd_table, f_elem);
         if (!duplicate_fd(parent_f, child)) {
-            return false;  // Stop and return false if any fd duplication fails
+            return false; 
         }
         e = list_next(e);
     }
@@ -248,7 +233,7 @@ __do_fork (void *aux) {
     intr_set_level(old_level);
 
     if (succ) {
-        if_.R.rax = 0;  // Child returns 0
+        if_.R.rax = 0;
         sema_up(&parent->sema_fork);
         do_iret(&if_);
     }
@@ -325,33 +310,6 @@ process_wait (tid_t child_tid) {
     return child_exit_status;
 }
 
-// void cleanup_children(struct thread *curr) {
-//     struct list_elem *e = list_begin(&curr->children_list);
-//     while (e != list_end(&curr->children_list)) {
-//         struct thread *child = list_entry(e, struct thread, child_elem);
-//         child->parent = NULL;
-//         e = list_remove(e);
-//     }
-// }
-
-// void cleanup_file_descriptors(struct thread *curr) {
-//     struct list_elem *e = list_begin(&curr->fdt_list);
-//     while (e != list_end(&curr->fdt_list)) {
-//         struct fd_table *fdt = list_entry(e, struct fd_table, f_elem);
-//         e = list_remove(e);
-//         if (fdt->file) {
-//             file_close(fdt->file);
-//         }
-//         free(fdt);
-//     }
-// }
-
-// void close_executable_file(struct thread *curr) {
-//     if (curr->file_exec) {
-//         file_close(curr->file_exec);
-//         curr->file_exec = NULL;
-//     }
-// }
 
 void print_process_exit_message(struct thread *curr) {
     char* ptr;
@@ -937,9 +895,9 @@ char* safe_strdup(const char* s) {
 char* get_first_string_safe(const char* command) {
     if (!command) return NULL;
 
-    char buffer[1024];  // Local buffer for manipulation
+    char buffer[1024];  
     safe_strlcpy(buffer, command, sizeof(buffer));
-    buffer[sizeof(buffer) - 1] = '\0';  // Ensure null termination
+    buffer[sizeof(buffer) - 1] = '\0';  
 
     char* save_ptr;
     char* first_word = strtok_r(buffer, " ", &save_ptr);
@@ -950,7 +908,7 @@ char* get_first_string_safe(const char* command) {
 
 bool setup_stack_args(const char *file_name, struct intr_frame *if_) {
     char *token, *save_ptr;
-    char *argv[128];  // Increase if necessary, but ensure not to overflow
+    char *argv[128]; 
     int argc = 0;
     char *fn_copy = palloc_get_page(0);
     if (fn_copy == NULL) return false;
@@ -985,7 +943,3 @@ bool setup_stack_args(const char *file_name, struct intr_frame *if_) {
     palloc_free_page(fn_copy);
     return true;
 }
-
-
-
-//// Modified - Argument Passing
