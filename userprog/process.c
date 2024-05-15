@@ -72,7 +72,9 @@ process_create_initd (const char *file_name) {
 static void
 initd (void *f_name) {
 #ifdef VM
+	lock_acquire (&thread_current () -> lock_spt);
 	supplemental_page_table_init (&thread_current ()->spt);
+	lock_release (&thread_current () -> lock_spt);
 #endif
 
 	process_init ();
@@ -87,12 +89,19 @@ initd (void *f_name) {
 tid_t
 process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	struct thread *curr = thread_current();
-    curr->child_tid = thread_create(name, PRI_DEFAULT, __do_fork, curr);
-    if (curr->child_tid == TID_ERROR) {
-        return TID_ERROR;  
-    }
-    sema_down(&curr->sema_fork);
-	return curr->child_tid;
+	//memcpy(&curr->fork_if, if_, sizeof(struct intr_frame));
+	// msg ("forked %d", curr -> tid);
+	curr -> fork_if.R.rax =  thread_create (name,
+			PRI_DEFAULT, __do_fork, thread_current ());
+
+	// msg ("forked %d", curr -> fork_if.R.rax);
+	// //printf pid of the process
+	// msg ("forked %d", curr -> tid);
+
+	// msg ("sema %d", curr -> sema_fork.value);
+	sema_down(&curr->sema_fork);
+	// msg ("sema down");
+	return curr -> fork_if.R.rax;
 }
 
 #ifndef VM
@@ -127,29 +136,38 @@ static bool allocate_and_duplicate_page(void *va, uint64_t *pte, struct thread *
 
 static bool
 duplicate_pte (uint64_t *pte, void *va, void *aux) {
-	// struct thread *current = thread_current ();
-	// struct thread *parent = (struct thread *) aux;
-
-
-	// /* 1. TODO: If the parent_page is kernel page, then return immediately. */
-
-	// /* 2. Resolve VA from the parent's page map level 4. */
-
-	// /* 3. TODO: Allocate new PAL_USER page for the child and set result to
-	//  *    TODO: NEWPAGE. */
-
-	// /* 4. TODO: Duplicate parent's page to the new page and
-	//  *    TODO: check whether parent's page is writable or not (set WRITABLE
-	//  *    TODO: according to the result). */
-	// /* 5. Add new page to child's page table at address VA with WRITABLE
-	//  *    permission. */
-	// 	/* 6. TODO: if fail to insert page, do error handling. */
-
-
+	struct thread *current = thread_current ();
 	struct thread *parent = (struct thread *) aux;
-    struct thread *current = thread_current();
+	void *parent_page;
+	void *newpage;
+	bool writable;
 
-    return allocate_and_duplicate_page(va, pte, parent, current);
+	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
+	if (is_kern_pte(pte))
+		return true;
+	/* 2. Resolve VA from the parent's page map level 4. */
+	parent_page = pml4_get_page (parent->pml4, va);
+
+	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
+	 *    TODO: NEWPAGE. */
+	newpage = palloc_get_page(PAL_USER);
+	if (newpage == NULL) {
+		return false;
+	}
+	/* 4. TODO: Duplicate parent's page to the new page and
+	 *    TODO: check whether parent's page is writable or not (set WRITABLE
+	 *    TODO: according to the result). */
+	memcpy(newpage, parent_page, PGSIZE);
+	writable = is_writable(pte);
+
+	/* 5. Add new page to child's page table at address VA with WRITABLE
+	 *    permission. */
+	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
+		/* 6. TODO: if fail to insert page, do error handling. */
+		palloc_free_page(newpage);
+		return false;
+	}
+	return true;
 }
 #endif
 
@@ -208,9 +226,11 @@ __do_fork (void *aux) {
 
 	process_activate (current);
 #ifdef VM
+	lock_acquire (&thread_current () -> lock_spt);
 	supplemental_page_table_init (&current->spt);
 	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
 		goto error;
+	lock_release (&thread_current () -> lock_spt);
 #else
 	if (!pml4_for_each (parent->pml4, duplicate_pte, parent))
 		goto error;
@@ -223,25 +243,66 @@ __do_fork (void *aux) {
 	 * TODO:       the resources of parent.*/
 
 	// struct list fdt_list =  parent->fdt_list;
-	enum intr_level old_level = intr_disable();
+	// enum intr_level old_level = intr_disable();
 
-    if (!duplicate_all_fds(parent, current)) {
-        intr_set_level(old_level);
-        goto error;
-    }
+    // if (!duplicate_all_fds(parent, current)) {
+    //     intr_set_level(old_level);
+    //     goto error;
+    // }
 
-    intr_set_level(old_level);
+    // intr_set_level(old_level);
 
-    if (succ) {
-        if_.R.rax = 0;
-        sema_up(&parent->sema_fork);
-        do_iret(&if_);
-    }
+    // if (succ) {
+    //     if_.R.rax = 0;
+    //     sema_up(&parent->sema_fork);
+    //     do_iret(&if_);
+    // }
+		enum intr_level old_level = intr_disable();
+
+	struct list_elem *e = list_begin(&parent->fdt_list);
+	struct thread *curr = thread_current();
+	int fdt_size;
+	process_init ();
+	for (; e!=list_end(&parent->fdt_list); e=list_next(e)) {
+			// Duplicate parent
+		struct fd_table *parent_f = list_entry(e, struct fd_table, f_elem);
+		lock_acquire (&filesys_lock);
+		struct file *dup_parent_f = file_duplicate(parent_f->file);
+		lock_release (&filesys_lock);
+			// Check if valid
+		if (dup_parent_f != NULL){
+			struct fd_table *child_fdt = malloc(sizeof(struct fd_table));
+			if (child_fdt == NULL) {
+				goto error;
+			}
+			child_fdt->file = dup_parent_f;
+			child_fdt->fd = parent_f -> fd;
+			// Update child's fdt_list
+			list_push_back(&curr->fdt_list, &child_fdt->f_elem);
+		}
+	}
+	curr -> last_fd = parent -> last_fd;
+	// msg ("curr id %d", curr -> tid);
+	// msg ("parent id %d", parent -> tid);
+	// msg ("sema %d", parent -> sema_fork.value);
+
+	intr_set_level(old_level);
+	// msg ("sema up");
+	/* Finally, switch to the newly created process. */
+	if (succ){
+		// msg ("sema up");
+		if_.R.rax = 0;
+		sema_up(&parent->sema_fork);
+		// msg ("sema value %d", parent -> sema_fork.value);
+		do_iret(&if_);
+		// msg ("do iret");
+	}
 
 		
 error:
 	parent_if -> R.rax = TID_ERROR;
 	sema_up(&parent->sema_fork);
+	
 	current -> exit_status = -1;
 	thread_exit ();
 }
@@ -296,18 +357,33 @@ process_wait (tid_t child_tid) {
 	// while(true){
 	// 	thread_yield();
 	// }
-    struct thread *current = thread_current();
-    struct thread *child = my_get_child(child_tid);
 
-    if (!child || child->parent->tid != current->tid) {
-        return -1;  
-    }
-    sema_down(&child->sema_process);
-    int child_exit_status = child->exit_status;
-    list_remove(&child->child_elem);
-    child->parent = NULL;
+    // struct thread *current = thread_current();
+    // struct thread *child = my_get_child(child_tid);
 
-    return child_exit_status;
+    // if (!child || child->parent->tid != current->tid) {
+    //     return -1;  
+    // }
+    // sema_down(&child->sema_process);
+    // int child_exit_status = child->exit_status;
+    // list_remove(&child->child_elem);
+    // child->parent = NULL;
+
+    // return child_exit_status;
+	struct thread *child;
+	int child_exit_status;
+	struct thread *curr = thread_current();
+	child = my_get_child(child_tid);
+	if (child == NULL)
+		return -1;
+	if (child->parent->tid != curr->tid)
+		return -1;
+
+	sema_down(&child->sema_process);
+	child_exit_status =  child->exit_status;
+	list_remove (&child->child_elem);
+	child -> parent = NULL;
+	return child_exit_status;
 }
 
 
@@ -355,6 +431,26 @@ void close_executable_file(struct thread *curr) {
     }
 }
 /* Exit the process. This function is called by thread_exit (). */
+// void
+// process_exit (void) {
+// 	enum intr_level old_level = intr_disable();
+// 	struct thread *curr = thread_current ();
+// 	/* TODO: Your code goes here.
+// 	 * TODO: Implement process termination message (see
+// 	 * TODO: project2/process_termination.html).
+// 	 * TODO: We recommend you to implement process resource cleanup here. */
+
+//     print_process_exit_message(curr);
+//     detach_all_children(curr);
+//     signal_sema_process(curr);
+//     close_and_free_all_files(curr);
+//     close_executable_file(curr);
+//     intr_set_level(old_level);
+//     process_cleanup();
+//     intr_set_level(old_level);
+//     process_cleanup();
+// }
+
 void
 process_exit (void) {
 	enum intr_level old_level = intr_disable();
@@ -364,15 +460,57 @@ process_exit (void) {
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
-    print_process_exit_message(curr);
-    detach_all_children(curr);
-    signal_sema_process(curr);
-    close_and_free_all_files(curr);
-    close_executable_file(curr);
-    intr_set_level(old_level);
-    process_cleanup();
-    intr_set_level(old_level);
-    process_cleanup();
+	char* ptr;
+	char *file_name = strtok_r(curr->name, " ", &ptr);
+	if (thread_current ()->is_process)
+		printf("%s: exit(%d)\n", file_name, curr->exit_status);
+
+	struct list_elem *e;
+	for (e = list_begin(&thread_current () -> children_list);
+		e != list_end (&thread_current () -> children_list); e = list_remove(e) ) {
+		struct thread* child = list_entry(e, struct thread, child_elem);
+		child -> parent = NULL;
+	}
+	
+	sema_up(&curr->sema_process);
+	// curr->exited = true;
+
+	// for (e = list_begin (&thread_current () -> fdt_list);
+	// 	e != list_end (&thread_current () -> fdt_list);) {
+	// 	struct fd_table *fdt = list_entry (e, struct fd_table, f_elem);
+	// // palloc_free_page (&thread_current ()->fdt_list);
+	struct list *fdt_l =  &thread_current () -> fdt_list;
+	e = list_begin (fdt_l);
+	
+	// printf("List size: %d \n", list_size(fdt_l));
+	for (; 
+		e!= list_end (fdt_l); 
+		 ) {
+
+		struct fd_table *fdt = list_entry (e, struct fd_table, f_elem);
+		
+		e = list_remove(e);
+
+		if (fdt->file != NULL) {
+			lock_acquire (&filesys_lock);
+			file_close (fdt->file);
+			lock_release (&filesys_lock);
+		}
+	// 	e = list_remove(e);
+	// 	free (fdt);
+	// }
+		free (fdt);
+	}
+	// process_cleanup ();
+
+	if (curr -> file_exec != NULL) {
+		lock_acquire (&filesys_lock);
+		file_close (curr -> file_exec);
+		lock_release (&filesys_lock);
+	}
+	// printf("Closed (maybe a long ago) %d\n", curr -> tid);
+	intr_set_level(old_level);
+	process_cleanup ();
 }
 
 /* Free the current process's resources. */
@@ -381,7 +519,9 @@ process_cleanup (void) {
 	struct thread *curr = thread_current ();
 
 #ifdef VM
+	lock_acquire (&thread_current () -> lock_spt);	
 	supplemental_page_table_kill (&curr->spt);
+	lock_release (&thread_current () -> lock_spt);
 #endif
 
 	uint64_t *pml4;
@@ -505,9 +645,10 @@ load (const char *file_name, struct intr_frame *if_) {
 	uintptr_t init_rsp = if_->rsp;
 
 	/* Open executable file. */
-	char* first_word = get_first_string_safe(file_name);
+	// char* first_word = get_first_string_safe(file_name);
+	token = strtok_r (file_name, " ", &save_ptr);
 	lock_acquire(&filesys_lock);
-	file = filesys_open (first_word);
+	file = filesys_open (token);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
@@ -578,23 +719,73 @@ load (const char *file_name, struct intr_frame *if_) {
 		}
 	}
 
+	// msg ("filename %s", file_name);
 	/* Set up stack. */
 	if (!setup_stack (if_))
 		goto done;
 
-	if (!setup_stack_args(file_name, if_)) 
-	goto done;
 	
-
+	
+	// msg ("rip\n");
 
 	// /* Start address. */
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
     if_->rip = ehdr.e_entry;  // Set the instruction pointer to the entry point of the ELF.
+	// if (!setup_stack_args(file_name, if_)) 
+	// 	goto done;
 
+	int cnt = 0;
+	
+	for (; token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
+		argv[cnt] = token;
+		//printf("Tosha: %s\n", token);
+		cnt++;
+	} 
+
+	// printf ("Number of Args: %d\n", cnt);
+	uintptr_t s = if_->rsp;
+	int tot_len = 0;
+
+	for (i = cnt-1; i >= 0; i--) {
+		tot_len += strlen(argv[i]) + 1;
+		if_->rsp -= (strlen(argv[i]) + 1);  //* sizeof (uint8_t)
+		addrs[i] = if_->rsp;
+		
+		memcpy(if_->rsp, argv[i], strlen(argv[i])+1);
+	}
+
+	//printf("total length: %d\n", tot_len);
+
+	// Place Padding!!!
+	if (tot_len % 8 != 0) {
+		if_->rsp -= (8 - tot_len % 8);
+		*(uint8_t *) if_->rsp = (uint8_t) 0;
+	}
+
+	// Last address
+	if_->rsp -= 8;
+	*(char **) if_->rsp = (char *) 0;
+
+	for (i=cnt-1; i>=0; i--) {
+		if_->rsp -= 8;
+		*(char **)if_->rsp = addrs[i];
+		// printf("1. %p\n", addrs[i]);
+	}
+	
+	if_->rsp -= sizeof(void (*) ()); // for return 
+	*(void **) if_->rsp = (void *) 0;
+	
+	// printf("1. %s\n", (uint64_t *)(if_->rsp + 8));
+	if_->R.rdi = cnt;
+	if_->R.rsi = if_->rsp + 8 ; //to argv[0] address
+
+	
+	
 	success = true;
 done:
+	// msg ("success %d", success);
 	/* We arrive here whether the load is successful or not. */
 	if (success == false)
 		file_close (file);
@@ -754,7 +945,16 @@ install_page (void *upage, void *kpage, bool writable) {
  * upper block. */
 
 static bool
-lazy_load_segment (struct page *page, void *aux) {
+lazy_load_segment (struct page *page, struct aux_info *aux) {
+	file_seek (aux -> file, aux -> ofs);
+
+	off_t new_offset = file_read (aux -> file, page -> frame -> kva, aux -> read_bytes);
+	if (new_offset != aux -> read_bytes)
+		PANIC("Couldn't read enough!\n");
+	memset ( page -> frame -> kva + new_offset, 0, aux -> zero_bytes); //why?
+
+	free (aux);
+	return true;
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
@@ -789,7 +989,12 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
+		// void *aux = NULL;
+		struct aux_info *aux = malloc (sizeof (struct aux_info));
+		aux -> ofs = ofs;
+		aux -> read_bytes = page_read_bytes;
+		aux -> zero_bytes = page_zero_bytes;
+		aux -> file = file;
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
 					writable, lazy_load_segment, aux))
 			return false;
@@ -798,6 +1003,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		ofs += page_read_bytes; 
 	}
 	return true;
 }
@@ -812,6 +1018,10 @@ setup_stack (struct intr_frame *if_) {
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
+		if (vm_alloc_page (VM_MARKER_0, stack_bottom, true)) {
+		if_ -> rsp = USER_STACK;
+		success = true;
+	}
 
 	return success;
 }
@@ -911,6 +1121,7 @@ bool setup_stack_args(const char *file_name, struct intr_frame *if_) {
     char *argv[128]; 
     int argc = 0;
     char *fn_copy = palloc_get_page(0);
+	// hex_dump(if_->rsp, if_->rsp, 100, true);
     if (fn_copy == NULL) return false;
 
     strlcpy(fn_copy, file_name, PGSIZE);

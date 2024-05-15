@@ -22,8 +22,9 @@ test_main (void)
   
   if ((pid = fork("child"))){
     wait (pid);
-
+    // msg ("Parent: child exit status is %d", wait (pid));
     byte_cnt = read (handle, buffer + 20, sizeof sample - 21);
+    msg ("Parent: %d", byte_cnt);
     if (byte_cnt != sizeof sample - 21)
       fail ("read() returned %d instead of %zu", byte_cnt, sizeof sample - 21);
     else if (strcmp (sample, buffer)) {

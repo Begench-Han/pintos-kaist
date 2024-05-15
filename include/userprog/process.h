@@ -13,6 +13,11 @@ bool setup_stack_args(const char *file_name, struct intr_frame *if_);
 // char* get_first_string_safe(const char* command)
 char* get_first_string_safe(const char* command);
 
-
+struct aux_info {
+    uint32_t read_bytes;
+    uint32_t zero_bytes;
+    struct file *file;
+    off_t ofs;
+};
 
 #endif /* userprog/process.h */

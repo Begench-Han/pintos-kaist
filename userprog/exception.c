@@ -83,9 +83,11 @@ kill (struct intr_frame *f) {
 		case SEL_UCSEG:
 			/* User's code segment, so it's a user exception, as we
 			   expected.  Kill the user process.  */
-			printf ("%s: dying due to interrupt %#04llx (%s).\n",
-			thread_name (), f->vec_no, intr_name (f->vec_no));
-			exit (-1);
+			// printf ("%s: dying due to interrupt %#04llx (%s).\n",
+			// 		thread_name (), f->vec_no, intr_name (f->vec_no));
+			// intr_dump_frame (f);
+			thread_current() -> exit_status = -1;
+			thread_exit ();
 
 		case SEL_KCSEG:
 			/* Kernel's code segment, which indicates a kernel bug.
@@ -100,7 +102,8 @@ kill (struct intr_frame *f) {
 			   kernel. */
 			printf ("Interrupt %#04llx (%s) in unknown segment %04x\n",
 					f->vec_no, intr_name (f->vec_no), f->cs);
-			exit (-1);
+			thread_current() -> exit_status = -1;
+			thread_exit ();
 	}
 }
 
@@ -158,6 +161,8 @@ page_fault (struct intr_frame *f) {
 				write ? "writing" : "reading",
 				user ? "user" : "kernel");
 	}
-	kill (f);
+	// if (!user || !write || is_user_vaddr(fault_addr)){
+		kill (f);
+	// }
 }
 

@@ -228,7 +228,7 @@ thread_create (const char *name, int priority,
 
 
 	//// Modified - System call
-	#ifdef USERPROG
+#ifdef USERPROG
 	struct thread *curr = thread_current ();
 	sema_init (&t->sema_process, 0);
 	sema_init (&t->sema_fork, 0);
@@ -244,14 +244,17 @@ thread_create (const char *name, int priority,
 
 	/* Add to run queue. */
 	thread_unblock (t);
-	    if (!list_empty(&ready_list) && thread_current() != idle_thread) {
-        struct thread *current = thread_current();
-        struct thread *next = list_entry(list_front(&ready_list), struct thread, elem);
-        if (next->priority > current->priority) {
-            thread_yield();
-        }
-    }
-
+	struct thread *cur = thread_current ();
+	//     if (!list_empty(&ready_list) && thread_current() != idle_thread) {
+    //     struct thread *current = thread_current();
+    //     struct thread *next = list_entry(list_front(&ready_list), struct thread, elem);
+    //     if (next->priority > current->priority) {
+    //         thread_yield();
+    //     }
+    // }
+	if (cur->priority < priority){	// if (thread_yield_condition ())
+    	thread_yield();
+	}
 	return tid;
 }
 
@@ -263,9 +266,14 @@ thread_create (const char *name, int priority,
    primitives in synch.h. */
 void
 thread_block (void) {
+	// printf("nfiewafijewakf\n");
 	ASSERT (!intr_context ());
+	// printf("nfiewafijewakf\n");
 	ASSERT (intr_get_level () == INTR_OFF);
+	// printf("nfiewafijewakf\n");
 	thread_current ()->status = THREAD_BLOCKED;
+	// printf("nfiewafijewakf\n");
+	// printf("thread_block: thread_current() = %p\n", thread_current());
 	schedule ();
 }
 
@@ -521,6 +529,7 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t-> last_fd = 1;
 	// t->next_fd = 2;
 #endif
+	lock_init (&t -> lock_spt);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

@@ -99,18 +99,31 @@ static void add_to_addr_cache(void* vaddr, bool valid) {
 }
 
 static bool my_verify_address(void *vaddr) {
-    if (vaddr == NULL || !is_user_vaddr(vaddr)) {
-        return false;
-    }
+    // if (vaddr == NULL || !is_user_vaddr(vaddr)) {
+    //     return false;
+    // }
 
-    if (check_addr_cache(vaddr)) {
-        return true;
-    }
+    // if (check_addr_cache(vaddr)) {
+    //     return true;
+    // }
 
-    bool valid = pml4_get_page(thread_current()->pml4, vaddr) != NULL;
-    add_to_addr_cache(vaddr, valid);
+    // bool valid = pml4_get_page(thread_current()->pml4, vaddr) != NULL;
+    // add_to_addr_cache(vaddr, valid);
 
-    return valid;
+    // return valid;
+    // if ((vaddr==NULL) || is_user_vaddr(vaddr) == false || (pml4_get_page(thread_current() -> pml4, vaddr) == NULL))
+	// 	exit(-1);
+    if ((vaddr==NULL) || is_user_vaddr(vaddr) == false)
+		exit(-1);
+
+	struct supplemental_page_table *spt = &thread_current ()->spt;
+	struct page * page = spt_find_page(spt, pg_round_down(vaddr));
+
+	if (page == NULL)
+		exit(-1);
+
+    // if (pml4_get_page(thread_current() -> pml4, vaddr) == NULL)
+	// 	exit(-1);
 }
 
 static inline void *safe_malloc(size_t size) {
@@ -133,7 +146,9 @@ static inline void unlock_and_free(void *ptr) {
 
 
 struct fd_table *my_get_file(int fd) {
+    // msg ("fd %d", fd);
     if (fd < 0 || fd >= MAX_FD) {
+        // msg ("2 - fd %d", fd);
         return NULL;  
     }
     return fd_table[fd];  
@@ -157,18 +172,23 @@ static void syscall_exit(int status) {
 }
 
 static int syscall_exec(const char *cmd_line) {
-    if (!cmd_line) return -1;
+    // if (!cmd_line) return -1;
 
-    my_verify_address(cmd_line);
+	my_verify_address(cmd_line);
+	// for(;;){}
 
-    char *cmd_line_copy = palloc_get_page(PAL_ZERO);
-    if (!cmd_line_copy) return -1;
+	char* cmd_line_copy = palloc_get_page(PAL_USER);
 
-    strlcpy(cmd_line_copy, cmd_line, PGSIZE);
-    int pid = process_exec(cmd_line_copy);
-    palloc_free_page(cmd_line_copy);
-
-    return pid >= 0 ? pid : -1; 
+	if (cmd_line_copy == NULL) {
+		return -1;
+	}
+	strlcpy(cmd_line_copy, cmd_line, PGSIZE);
+	// printf("In the EXEC function\n");
+    // msg ("In the EXEC function\n");
+	if (process_exec(cmd_line_copy) < 0) {
+		exit(-1);
+	}
+	return -1;
 }
 
 static int syscall_wait(tid_t pid) {
@@ -176,7 +196,7 @@ static int syscall_wait(tid_t pid) {
 }
 
 static bool syscall_create(const char *file, unsigned initial_size) {
-    if (!file) return false;
+    // if (!file) return false;
 
     verify_and_lock(file);
     bool result = filesys_create(file, initial_size);
@@ -205,7 +225,7 @@ static int find_free_fd(void) {
 }
 
 static int syscall_open(const char *file) {
-    if (!file || !my_verify_address(file)) return -1;
+    my_verify_address (file);
 
     lock_acquire(&filesys_lock);
     struct file *f = filesys_open(file);
@@ -251,6 +271,7 @@ static int syscall_filesize(int fd) {
 
 static int syscall_read(int fd, void *buffer, unsigned size) {
     my_verify_address(buffer);
+    // msg ("1 - In the read system call");
     if (fd == 0) { 
         unsigned i = 0;
         for (; i < size; ++i) {
@@ -258,18 +279,22 @@ static int syscall_read(int fd, void *buffer, unsigned size) {
         }
         return size;
     }
-
+    // msg ("2 - In the read system call");
     if (fd == 1 || fd < 0) { 
         exit(-1);
     }
-
+    // msg ("3 - In the read system call");
     struct fd_table *fdt = my_get_file(fd);
-    if (fdt == NULL)
+    // msg ("fdt %d", fdt);
+    if (fdt == NULL){
+        // msg ("fdt %d", fdt);
         exit(-1);
-
+    }
+    // msg ("4 - In the read system call");
     struct file *f = fdt->file;
     lock_acquire(&filesys_lock);
     int read_bytes = file_read(f, buffer, size);
+    // msg ("In the read system call");
     lock_release(&filesys_lock);
 
     return read_bytes;
@@ -292,11 +317,25 @@ static int syscall_write(int fd, const void *buffer, unsigned size) {
     return ret_val;
 }
 
-static tid_t syscall_fork(const char *thread_name) {
-    my_verify_address(thread_name);
-    struct intr_frame my_if;
-    memcpy(&my_if, &thread_current()->fork_if, sizeof(struct intr_frame));
-    return process_fork(thread_name, &my_if);
+// static tid_t syscall_fork(const char *thread_name) {
+//     // my_verify_address(thread_name);
+//     // struct intr_frame my_if;
+//     // memcpy(&my_if, &thread_current()->fork_if, sizeof(struct intr_frame));
+//     // // printf("In the fork system call\n");
+//     // return process_fork(thread_name, &my_if);
+//     msg ("thread id %d\n", thread_current()->tid);
+//     my_verify_address (thread_name);
+// 	struct intr_frame *my_if = &thread_current()->fork_if;
+// 	tid_t tid = process_fork (thread_name, my_if);
+// 	return tid;
+// }
+
+tid_t 
+fork (const char *thread_name) {
+	my_verify_address (thread_name);
+	struct intr_frame *my_if = &thread_current()->fork_if;
+	tid_t tid = process_fork (thread_name, my_if);
+	return tid;
 }
 
 static void syscall_close(int fd) {
@@ -304,11 +343,15 @@ static void syscall_close(int fd) {
     if (fdt == NULL) {
         return;
     }
+    // printf("In the close system call\n");
+    // msg ("In the close system call");
     lock_acquire(&filesys_lock);
     file_close(fdt->file);
     free(fdt);
     fd_table[fd] = NULL;  
     lock_release(&filesys_lock);
+    // msg ("In the close system call");
+    return;
 }
 
 
@@ -344,8 +387,31 @@ static void fetch_syscall_args(struct intr_frame *f, int *args, int count) {
     }
 }
 
+void *
+mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
+    if (fd < 2 || is_kernel_vaddr (addr) || is_kernel_vaddr (addr - length)) {
+		return NULL;
+	} 
+
+	if (offset > length || pg_ofs (addr))  {
+		return NULL;
+	}
+
+	struct fd_table *fdt = my_get_file(fd);
+	if (fdt == NULL)
+		return NULL;
+	struct file *file = fdt -> file;
+	return do_mmap (addr, length, writable, file, offset);
+}
+
+void
+munmap (void *addr) {
+	return do_munmap (addr);
+}
+
 void syscall_handler(struct intr_frame *f) {
     int sys_call_num = f->R.rax;
+    thread_current () -> tf.rsp = f -> rsp;
 	// printf("In the syscall handler\n");
 	// printf("Unsupported system call number %d\n", sys_call_num);
 
@@ -359,8 +425,12 @@ void syscall_handler(struct intr_frame *f) {
             break;
         case SYS_EXEC:
             // my_verify_address((const void*) f->R.rdi);
-            f->R.rax = syscall_exec((const char*) f->R.rdi);
+            // f->R.rax = syscall_exec((const char*) f->R.rdi);
+            {
+            char *cmd_line = f->R.rdi;
+			f->R.rax = syscall_exec(cmd_line);
             break;
+            }
         case SYS_WAIT:
             // my_verify_address((const void*) f->R.rdi);
             f->R.rax = syscall_wait(f->R.rdi);
@@ -403,7 +473,10 @@ void syscall_handler(struct intr_frame *f) {
 			// printf("In the fork system call\n");
             // my_verify_address((const void*) f->R.rdi);
             // memcpy(&thread_current()->fork_if, f, sizeof(struct intr_frame));
-            f->R.rax = syscall_fork((const char*) f->R.rdi);
+            // printf("In the fork system call\n");
+            memcpy(&thread_current()->fork_if, f, sizeof(struct intr_frame));
+			// f->R.rax = fork (f->R.rdi);
+            f->R.rax = fork((const char*) f->R.rdi);
             break;
         case SYS_CLOSE:
 			// printf("In the close system call\n");
@@ -414,6 +487,21 @@ void syscall_handler(struct intr_frame *f) {
             // my_verify_address((const void*) f->R.rdi);
             f->R.rax = syscall_tell(f->R.rdi);
             break;
+
+        case SYS_MMAP:
+		{
+			// SYS_MMAP, addr, length, writable, fd, offset
+		// 	void *addr, size_t length, int writable,
+		// , off_t offset
+			// struct file *file = my_get_file(f->R.rdx) -> file;
+			f->R.rax = mmap(f->R.rdi, (size_t) f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+			break;
+		}
+		case SYS_MUNMAP:
+		{
+			munmap(f->R.rdi);
+			break;
+		}
         case SYS_SEEK:
             // my_verify_address((const void*) f->R.rdi);
             // my_verify_address((const void*) f->R.rsi);

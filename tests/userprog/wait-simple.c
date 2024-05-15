@@ -11,6 +11,7 @@ test_main (void)
   if ((pid = fork ("child-simple"))){
     msg ("wait(exec()) = %d", wait (pid));
   } else {
+    msg ("exec(child-simple)");
     exec ("child-simple");
   }
 }
