@@ -31,6 +31,7 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 	struct file_page *file_page = &page->file;
 	file_page -> file_aux = ((struct aux_info *) page->uninit.aux ) -> file ;
 	file_page -> read_bytes = ((struct aux_info *) page->uninit.aux ) -> read_bytes;
+	file_page -> file_off = ((struct aux_info *) page->uninit.aux ) -> ofs;
 }
 
 /* Swap in the page by read contents from the file. */
@@ -56,7 +57,7 @@ file_backed_destroy (struct page *page) {
 		if (pml4_is_dirty(thread_current()->pml4, page -> va)){
 			// printf("NEED to write back to file!\n\n");
 			// my_file->pos -= file_page ->read_bytes;
-			off_t written_size =  file_write(my_file, page->frame->kva, file_page -> read_bytes);
+			off_t written_size =  file_write_at(my_file, page -> frame -> kva, file_page -> read_bytes, file_page -> file_off);
 		}
 	}	
 }

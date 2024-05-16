@@ -8,6 +8,7 @@
 #include "threads/synch.h"
 #ifdef VM
 #include "vm/vm.h"
+#include "filesys/file.h"
 #endif
 
 

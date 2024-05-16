@@ -157,8 +157,10 @@ spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 /* Get the struct frame, that will be evicted. */
 static struct frame *
 vm_get_victim (void) {
-	struct frame *victim = NULL;
+	struct frame *victim;
 	 /* TODO: The policy for eviction is up to you. */
+	int ls = list_size(&frame_list);
+	victim =list_entry(list_pop_front(&frame_list), struct frame, frame_elem);
 
 	return victim;
 }
@@ -167,10 +169,19 @@ vm_get_victim (void) {
  * Return NULL on error.*/
 static struct frame *
 vm_evict_frame (void) {
-	struct frame *victim UNUSED = vm_get_victim ();
+	struct frame *victim  = vm_get_victim ();
 	/* TODO: swap out the victim and return the evicted frame. */
+	if (victim == NULL)
+		return NULL;
+	struct page * vpage = victim -> page;
+	swap_out(vpage);
 
-	return NULL;
+	victim -> page = NULL;
+	vpage -> frame = NULL;
+
+	pml4_clear_page (thread_current() -> pml4, vpage -> va);
+
+	return victim;
 }
 
 /* palloc() and get frame. If there is no available page, evict the page
@@ -185,17 +196,20 @@ vm_get_frame (void) {
 	// struct page *page = malloc(sizeof(struct page));
 
 	if (page == NULL) {
-		PANIC('todo');
+		frame = vm_evict_frame();
 	} else {
-		frame = palloc_get_page(PAL_USER); //maybe error
+		// frame = palloc_get_page(PAL_USER); //maybe error.
+		frame = malloc (sizeof (struct frame));
 		ASSERT (frame != NULL);
 	}
 	
-	frame->page = NULL;
+	frame -> page = NULL;
 	frame -> kva = page;
 	
 	ASSERT (frame->page == NULL);
-	// list_push_back (&frame_list, &frame->frame_elem);
+	size_t ls = list_size (&frame_list);
+	list_push_back (&frame_list, &frame->frame_elem);
+	ls = list_size(&frame_list);
 	return frame;
 }
 
@@ -220,9 +234,7 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 
 	/* TODO: Validate the fault */
 	/* TODO: Your code goes here */
-	// if (!not_present){
-	// 	return false;
-	// }
+	
 	void *pg_addr = pg_round_down(addr);
 	
 	//set rsp
@@ -240,12 +252,17 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 		page = spt_find_page(spt, pg_addr);
 		if (!page)
 			return false;
+		if (!(page->writable) && write)
+			return false;
 	} else {
 		while (page == NULL){
 			page = spt_find_page(spt, pg_addr);
 			vm_stack_growth(pg_addr);
 			pg_addr += PGSIZE;
+			
 		}
+		if (!(page->writable) && write)
+			return false;
 		return true;
 	}
 	

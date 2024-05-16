@@ -312,6 +312,7 @@ static int syscall_write(int fd, const void *buffer, unsigned size) {
     }
 
     lock_acquire(&filesys_lock);
+    struct file *temp_f = fdt -> file;
     int ret_val = file_write(fdt->file, buffer, size);
     lock_release(&filesys_lock);
     return ret_val;
